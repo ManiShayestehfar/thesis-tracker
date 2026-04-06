@@ -1,16 +1,13 @@
-import { Pool, neonConfig } from '@neondatabase/serverless';
-import ws from 'ws';
+import { neon } from '@neondatabase/serverless';
 
-neonConfig.webSocketConstructor = ws;
-
-const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? '' });
+const sql = neon(process.env.DATABASE_URL ?? '');
 
 type SqlParam = string | number | boolean | null | undefined;
 
 /** Convert SQLite ? placeholders to Postgres $1, $2, … */
-function p(sql: string): string {
+function p(query: string): string {
   let i = 0;
-  return sql.replace(/\?/g, () => `$${++i}`);
+  return query.replace(/\?/g, () => `$${++i}`);
 }
 
 let schemaReady: Promise<void> | null = null;
@@ -21,7 +18,7 @@ function ensureSchema(): Promise<void> {
 }
 
 async function createSchema(): Promise<void> {
-  await pool.query(`
+  await sql(`
     CREATE TABLE IF NOT EXISTS thesis (
       id INTEGER PRIMARY KEY,
       title TEXT NOT NULL DEFAULT '',
@@ -173,25 +170,24 @@ async function createSchema(): Promise<void> {
   `);
 }
 
-export async function rows<T>(sql: string, args: SqlParam[] = []): Promise<T[]> {
+export async function rows<T>(query: string, args: SqlParam[] = []): Promise<T[]> {
   await ensureSchema();
-  const result = await pool.query(p(sql), args as unknown[]);
-  return result.rows as T[];
+  const result = await sql(p(query), args as unknown[]);
+  return result as T[];
 }
 
-export async function row<T>(sql: string, args: SqlParam[] = []): Promise<T | undefined> {
-  const r = await rows<T>(sql, args);
+export async function row<T>(query: string, args: SqlParam[] = []): Promise<T | undefined> {
+  const r = await rows<T>(query, args);
   return r[0];
 }
 
-export async function run(sql: string, args: SqlParam[] = []): Promise<void> {
+export async function run(query: string, args: SqlParam[] = []): Promise<void> {
   await ensureSchema();
-  await pool.query(p(sql), args as unknown[]);
+  await sql(p(query), args as unknown[]);
 }
 
-export async function insert(sql: string, args: SqlParam[] = []): Promise<number> {
+export async function insert(query: string, args: SqlParam[] = []): Promise<number> {
   await ensureSchema();
-  const returning = p(sql) + ' RETURNING id';
-  const result = await pool.query(returning, args as unknown[]);
-  return result.rows[0].id as number;
+  const result = await sql(p(query) + ' RETURNING id', args as unknown[]);
+  return (result[0] as { id: number }).id;
 }
