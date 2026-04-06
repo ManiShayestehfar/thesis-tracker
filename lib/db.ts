@@ -1,21 +1,27 @@
-import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
+import { Pool, neonConfig } from '@neondatabase/serverless';
+import ws from 'ws';
 
-const DB_DIR = path.join(process.cwd(), 'data');
-const DB_PATH = path.join(DB_DIR, 'thesis.db');
+neonConfig.webSocketConstructor = ws;
 
-if (!fs.existsSync(DB_DIR)) {
-  fs.mkdirSync(DB_DIR, { recursive: true });
+const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? '' });
+
+type SqlParam = string | number | boolean | null | undefined;
+
+/** Convert SQLite ? placeholders to Postgres $1, $2, … */
+function p(sql: string): string {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
 }
 
-const db = new Database(DB_PATH);
+let schemaReady: Promise<void> | null = null;
 
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+function ensureSchema(): Promise<void> {
+  if (!schemaReady) schemaReady = createSchema();
+  return schemaReady;
+}
 
-function initSchema(): void {
-  db.exec(`
+async function createSchema(): Promise<void> {
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS thesis (
       id INTEGER PRIMARY KEY,
       title TEXT NOT NULL DEFAULT '',
@@ -27,7 +33,7 @@ function initSchema(): void {
     );
 
     CREATE TABLE IF NOT EXISTS chapters (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       title TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'Not Started',
       order_index INTEGER NOT NULL DEFAULT 0,
@@ -37,7 +43,7 @@ function initSchema(): void {
     );
 
     CREATE TABLE IF NOT EXISTS sections (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       chapter_id INTEGER NOT NULL,
       title TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'Not Started',
@@ -49,12 +55,12 @@ function initSchema(): void {
     );
 
     CREATE TABLE IF NOT EXISTS tags (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       name TEXT NOT NULL UNIQUE
     );
 
     CREATE TABLE IF NOT EXISTS proofs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       label TEXT NOT NULL,
       statement TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'Conjecture',
@@ -77,7 +83,7 @@ function initSchema(): void {
     );
 
     CREATE TABLE IF NOT EXISTS log_entries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       date TEXT NOT NULL,
       body TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL
@@ -108,7 +114,7 @@ function initSchema(): void {
     );
 
     CREATE TABLE IF NOT EXISTS refs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       citation_key TEXT NOT NULL UNIQUE,
       title TEXT NOT NULL DEFAULT '',
       authors TEXT NOT NULL DEFAULT '',
@@ -137,7 +143,7 @@ function initSchema(): void {
     );
 
     CREATE TABLE IF NOT EXISTS milestones (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       title TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       due_date TEXT NOT NULL,
@@ -153,22 +159,39 @@ function initSchema(): void {
     );
 
     CREATE TABLE IF NOT EXISTS notation (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       symbol TEXT NOT NULL,
       latex TEXT NOT NULL,
       definition TEXT NOT NULL DEFAULT '',
       first_used_chapter_id INTEGER,
       FOREIGN KEY (first_used_chapter_id) REFERENCES chapters(id) ON DELETE SET NULL
     );
-  `);
 
-  // Ensure a thesis row always exists for editing
-  db.prepare(`
-    INSERT OR IGNORE INTO thesis (id, title, supervisor, university, degree, expected_submission, abstract)
+    INSERT INTO thesis (id, title, supervisor, university, degree, expected_submission, abstract)
     VALUES (1, '', '', '', '', '', '')
-  `).run();
+    ON CONFLICT (id) DO NOTHING;
+  `);
 }
 
-initSchema();
+export async function rows<T>(sql: string, args: SqlParam[] = []): Promise<T[]> {
+  await ensureSchema();
+  const result = await pool.query(p(sql), args as unknown[]);
+  return result.rows as T[];
+}
 
-export default db;
+export async function row<T>(sql: string, args: SqlParam[] = []): Promise<T | undefined> {
+  const r = await rows<T>(sql, args);
+  return r[0];
+}
+
+export async function run(sql: string, args: SqlParam[] = []): Promise<void> {
+  await ensureSchema();
+  await pool.query(p(sql), args as unknown[]);
+}
+
+export async function insert(sql: string, args: SqlParam[] = []): Promise<number> {
+  await ensureSchema();
+  const returning = p(sql) + ' RETURNING id';
+  const result = await pool.query(returning, args as unknown[]);
+  return result.rows[0].id as number;
+}

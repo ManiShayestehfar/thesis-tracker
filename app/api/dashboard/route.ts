@@ -1,6 +1,6 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
-import db from '@/lib/db';
+import { rows, row, run } from '@/lib/db';
 import type { ThesisMeta, Chapter, Proof, LogEntry, Milestone, DashboardData, ChapterStatus, ProofStatus, Tag } from '@/lib/types';
 
 export async function GET() {
@@ -9,74 +9,76 @@ export async function GET() {
     const in30 = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
     // Auto-update overdue milestones
-    db.prepare(`UPDATE milestones SET status = 'Overdue' WHERE due_date < ? AND status = 'Pending'`).run(today);
+    await run(`UPDATE milestones SET status = 'Overdue' WHERE due_date < ? AND status = 'Pending'`, [today]);
 
-    const thesis = db.prepare('SELECT * FROM thesis WHERE id = 1').get() as ThesisMeta;
-    const chapters = db.prepare('SELECT * FROM chapters').all() as Chapter[];
-    const proofs = db.prepare('SELECT status, COUNT(*) as count FROM proofs GROUP BY status').all() as { status: ProofStatus; count: number }[];
+    const [thesis, chapters, proofCounts] = await Promise.all([
+      row<ThesisMeta>('SELECT * FROM thesis WHERE id = 1'),
+      rows<Chapter>('SELECT * FROM chapters'),
+      rows<{ status: ProofStatus; count: number }>('SELECT status, COUNT(*) as count FROM proofs GROUP BY status'),
+    ]);
 
     // Chapter stats grouped by status
     const statuses: ChapterStatus[] = ['Not Started', 'Drafting', 'In Review', 'Complete'];
     const chapterStats = statuses.map(status => {
-      const rows = chapters.filter(c => c.status === status);
+      const filtered = (chapters ?? []).filter(c => c.status === status);
       return {
         status,
-        count: rows.length,
-        wordCount: rows.reduce((s, c) => s + (c.current_word_count || 0), 0),
-        targetWordCount: rows.reduce((s, c) => s + (c.target_word_count || 0), 0),
+        count: filtered.length,
+        wordCount: filtered.reduce((s, c) => s + (c.current_word_count || 0), 0),
+        targetWordCount: filtered.reduce((s, c) => s + (c.target_word_count || 0), 0),
       };
     });
 
     const proofStats = (['Conjecture', 'In Progress', 'Draft Complete', 'Verified'] as ProofStatus[]).map(status => ({
       status,
-      count: proofs.find(p => p.status === status)?.count ?? 0,
+      count: proofCounts.find(p => p.status === status)?.count ?? 0,
     }));
 
-    // Completion %: weight by target_word_count, complete chapters count fully, others by current/target
-    const totalTarget = chapters.reduce((s, c) => s + (c.target_word_count || 0), 0);
-    const completedWords = chapters.reduce((s, c) => {
+    const totalTarget = (chapters ?? []).reduce((s, c) => s + (c.target_word_count || 0), 0);
+    const completedWords = (chapters ?? []).reduce((s, c) => {
       if (c.status === 'Complete') return s + (c.target_word_count || 0);
       return s + Math.min(c.current_word_count || 0, c.target_word_count || 0);
     }, 0);
     const completionPercentage = totalTarget > 0 ? Math.round((completedWords / totalTarget) * 100) : 0;
 
     // Upcoming milestones (next 30 days + overdue)
-    const upcomingMilestones = db.prepare(`
+    const upcomingMilestones = await rows<Milestone>(`
       SELECT * FROM milestones
       WHERE (due_date BETWEEN ? AND ? OR status = 'Overdue')
       AND status != 'Complete'
       ORDER BY due_date ASC
       LIMIT 10
-    `).all(today, in30) as Milestone[];
+    `, [today, in30]);
 
-    const msIds = upcomingMilestones.map(m => m.id);
-    if (msIds.length > 0) {
-      const msChapters = db.prepare(
-        `SELECT mc.milestone_id, c.id, c.title FROM milestone_chapters mc JOIN chapters c ON c.id = mc.chapter_id WHERE mc.milestone_id IN (${msIds.map(() => '?').join(',')})`
-      ).all(...msIds) as { milestone_id: number; id: number; title: string }[];
+    if (upcomingMilestones.length > 0) {
+      const msIds = upcomingMilestones.map(m => m.id);
+      const ph = msIds.map(() => '?').join(',');
+      const msChapters = await rows<{ milestone_id: number; id: number; title: string }>(
+        `SELECT mc.milestone_id, c.id, c.title FROM milestone_chapters mc JOIN chapters c ON c.id = mc.chapter_id WHERE mc.milestone_id IN (${ph})`,
+        msIds
+      );
       upcomingMilestones.forEach(m => {
         m.linked_chapters = msChapters.filter(c => c.milestone_id === m.id).map(c => ({ id: c.id, title: c.title }));
       });
     }
 
     // Recent log entries
-    const recentLog = db.prepare(
-      'SELECT * FROM log_entries ORDER BY date DESC, created_at DESC LIMIT 5'
-    ).all() as LogEntry[];
+    const recentLog = await rows<LogEntry>('SELECT * FROM log_entries ORDER BY date DESC, created_at DESC LIMIT 5');
 
     if (recentLog.length > 0) {
       const logIds = recentLog.map(e => e.id);
       const ph = logIds.map(() => '?').join(',');
-      const logTags = db.prepare(
-        `SELECT lt.entry_id, t.id, t.name FROM log_tags lt JOIN tags t ON t.id = lt.tag_id WHERE lt.entry_id IN (${ph})`
-      ).all(...logIds) as { entry_id: number; id: number; name: string }[];
+      const logTags = await rows<{ entry_id: number; id: number; name: string }>(
+        `SELECT lt.entry_id, t.id, t.name FROM log_tags lt JOIN tags t ON t.id = lt.tag_id WHERE lt.entry_id IN (${ph})`,
+        logIds
+      );
       recentLog.forEach(e => {
         e.tags = logTags.filter(t => t.entry_id === e.id).map(t => ({ id: t.id, name: t.name }) as Tag);
       });
     }
 
     const data: DashboardData = {
-      thesis,
+      thesis: thesis!,
       chapterStats,
       proofStats,
       upcomingMilestones,

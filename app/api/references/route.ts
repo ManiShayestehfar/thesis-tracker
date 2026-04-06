@@ -1,20 +1,21 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
-import db from '@/lib/db';
+import { rows, row, run, insert } from '@/lib/db';
 import type { Reference } from '@/lib/types';
 
-function attachRelations(refs: Reference[]): Reference[] {
+async function attachRelations(refs: Reference[]): Promise<Reference[]> {
   if (refs.length === 0) return refs;
   const ids = refs.map(r => r.id);
   const ph = ids.map(() => '?').join(',');
 
-  const chapters = db.prepare(
-    `SELECT rc.ref_id, c.id, c.title FROM ref_chapters rc JOIN chapters c ON c.id = rc.chapter_id WHERE rc.ref_id IN (${ph})`
-  ).all(...ids) as { ref_id: number; id: number; title: string }[];
-
-  const proofs = db.prepare(
-    `SELECT rp.ref_id, p.id, p.label FROM ref_proofs rp JOIN proofs p ON p.id = rp.proof_id WHERE rp.ref_id IN (${ph})`
-  ).all(...ids) as { ref_id: number; id: number; label: string }[];
+  const [chapters, proofs] = await Promise.all([
+    rows<{ ref_id: number; id: number; title: string }>(
+      `SELECT rc.ref_id, c.id, c.title FROM ref_chapters rc JOIN chapters c ON c.id = rc.chapter_id WHERE rc.ref_id IN (${ph})`, ids
+    ),
+    rows<{ ref_id: number; id: number; label: string }>(
+      `SELECT rp.ref_id, p.id, p.label FROM ref_proofs rp JOIN proofs p ON p.id = rp.proof_id WHERE rp.ref_id IN (${ph})`, ids
+    ),
+  ]);
 
   return refs.map(r => ({
     ...r,
@@ -40,8 +41,8 @@ export async function GET(req: Request) {
     }
     sql += ' ORDER BY year DESC, authors ASC';
 
-    const refs = db.prepare(sql).all(...args) as Reference[];
-    return NextResponse.json({ data: attachRelations(refs) });
+    const refs = await rows<Reference>(sql, args);
+    return NextResponse.json({ data: await attachRelations(refs) });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
@@ -50,35 +51,24 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = await req.json() as Partial<Reference> & { chapter_ids?: number[]; proof_ids?: number[] };
-    const result = db.prepare(`
-      INSERT INTO refs (citation_key, title, authors, year, journal, doi, url, notes, read_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      body.citation_key ?? '',
-      body.title ?? '',
-      body.authors ?? '',
-      body.year ?? null,
-      body.journal ?? '',
-      body.doi ?? '',
-      body.url ?? '',
-      body.notes ?? '',
-      body.read_status ?? 'Unread'
+    const id = await insert(
+      'INSERT INTO refs (citation_key, title, authors, year, journal, doi, url, notes, read_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [body.citation_key ?? '', body.title ?? '', body.authors ?? '', body.year ?? null, body.journal ?? '', body.doi ?? '', body.url ?? '', body.notes ?? '', body.read_status ?? 'Unread']
     );
-    const id = result.lastInsertRowid as number;
 
     if (body.chapter_ids?.length) {
       for (const cid of body.chapter_ids) {
-        db.prepare('INSERT OR IGNORE INTO ref_chapters (ref_id, chapter_id) VALUES (?, ?)').run(id, cid);
+        await run('INSERT INTO ref_chapters (ref_id, chapter_id) VALUES (?, ?) ON CONFLICT DO NOTHING', [id, cid]);
       }
     }
     if (body.proof_ids?.length) {
       for (const pid of body.proof_ids) {
-        db.prepare('INSERT OR IGNORE INTO ref_proofs (ref_id, proof_id) VALUES (?, ?)').run(id, pid);
+        await run('INSERT INTO ref_proofs (ref_id, proof_id) VALUES (?, ?) ON CONFLICT DO NOTHING', [id, pid]);
       }
     }
 
-    const ref = db.prepare('SELECT * FROM refs WHERE id = ?').get(id) as Reference;
-    const refs = attachRelations([ref]);
+    const ref = await row<Reference>('SELECT * FROM refs WHERE id = ?', [id]);
+    const refs = await attachRelations([ref!]);
     return NextResponse.json({ data: refs[0] }, { status: 201 });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
