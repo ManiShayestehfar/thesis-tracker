@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { rows, row, run, insert } from '@/lib/db';
+import { requireUserId } from '@/lib/auth';
 import type { Proof, Tag } from '@/lib/types';
 
 async function attachTags(proofs: Proof[]): Promise<Proof[]> {
@@ -19,6 +20,7 @@ async function attachTags(proofs: Proof[]): Promise<Proof[]> {
 
 export async function GET(req: Request) {
   try {
+    const userId = await requireUserId();
     const { searchParams } = new URL(req.url);
     const status = searchParams.get('status');
     const chapterId = searchParams.get('chapter_id');
@@ -28,39 +30,41 @@ export async function GET(req: Request) {
     let sql = `
       SELECT p.*, c.title as chapter_title FROM proofs p
       LEFT JOIN chapters c ON c.id = p.chapter_id
-      WHERE 1=1
+      WHERE p.user_id = ?
     `;
-    const args: (string | number)[] = [];
+    const args: (string | number)[] = [userId];
 
     if (status) { sql += ' AND p.status = ?'; args.push(status); }
     if (chapterId) { sql += ' AND p.chapter_id = ?'; args.push(parseInt(chapterId, 10)); }
     if (difficulty) { sql += ' AND p.difficulty = ?'; args.push(parseInt(difficulty, 10)); }
     if (tag) {
-      sql += ' AND p.id IN (SELECT pt.proof_id FROM proof_tags pt JOIN tags t ON t.id = pt.tag_id WHERE t.name = ?)';
-      args.push(tag);
+      sql += ' AND p.id IN (SELECT pt.proof_id FROM proof_tags pt JOIN tags t ON t.id = pt.tag_id WHERE t.name = ? AND t.user_id = ?)';
+      args.push(tag, userId);
     }
     sql += ' ORDER BY p.date_created DESC';
 
     const proofs = await rows<Proof>(sql, args);
     return NextResponse.json({ data: await attachTags(proofs) });
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const msg = String(e);
+    return NextResponse.json({ error: msg }, { status: msg.includes('Unauthorized') ? 401 : 500 });
   }
 }
 
 export async function POST(req: Request) {
   try {
+    const userId = await requireUserId();
     const body = await req.json() as Partial<Proof> & { tags?: string[] };
     const now = new Date().toISOString().split('T')[0];
     const id = await insert(
-      'INSERT INTO proofs (label, statement, status, chapter_id, section_id, proof_sketch, date_created, date_completed, difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [body.label ?? '', body.statement ?? '', body.status ?? 'Conjecture', body.chapter_id ?? null, body.section_id ?? null, body.proof_sketch ?? '', body.date_created ?? now, body.date_completed ?? null, body.difficulty ?? 3]
+      'INSERT INTO proofs (user_id, label, statement, status, chapter_id, section_id, proof_sketch, date_created, date_completed, difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [userId, body.label ?? '', body.statement ?? '', body.status ?? 'Conjecture', body.chapter_id ?? null, body.section_id ?? null, body.proof_sketch ?? '', body.date_created ?? now, body.date_completed ?? null, body.difficulty ?? 3]
     );
 
     if (body.tags?.length) {
       for (const name of body.tags) {
-        await run('INSERT INTO tags (name) VALUES (?) ON CONFLICT (name) DO NOTHING', [name]);
-        const tag = await row<{ id: number }>('SELECT id FROM tags WHERE name = ?', [name]);
+        await run('INSERT INTO tags (user_id, name) VALUES (?, ?) ON CONFLICT (user_id, name) DO NOTHING', [userId, name]);
+        const tag = await row<{ id: number }>('SELECT id FROM tags WHERE user_id = ? AND name = ?', [userId, name]);
         if (tag) await run('INSERT INTO proof_tags (proof_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING', [id, tag.id]);
       }
     }
@@ -71,6 +75,7 @@ export async function POST(req: Request) {
     const proofs = await attachTags([proof!]);
     return NextResponse.json({ data: proofs[0] }, { status: 201 });
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const msg = String(e);
+    return NextResponse.json({ error: msg }, { status: msg.includes('Unauthorized') ? 401 : 500 });
   }
 }

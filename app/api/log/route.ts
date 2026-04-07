@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { rows, row, run, insert } from '@/lib/db';
+import { requireUserId } from '@/lib/auth';
 import type { LogEntry, Tag } from '@/lib/types';
 
 async function attachRelations(entries: LogEntry[]): Promise<LogEntry[]> {
@@ -30,20 +31,21 @@ async function attachRelations(entries: LogEntry[]): Promise<LogEntry[]> {
 
 export async function GET(req: Request) {
   try {
+    const userId = await requireUserId();
     const { searchParams } = new URL(req.url);
     const tag = searchParams.get('tag');
     const from = searchParams.get('from');
     const to = searchParams.get('to');
     const limit = searchParams.get('limit');
 
-    let sql = 'SELECT * FROM log_entries WHERE 1=1';
-    const args: (string | number)[] = [];
+    let sql = 'SELECT * FROM log_entries WHERE user_id = ?';
+    const args: (string | number)[] = [userId];
 
     if (from) { sql += ' AND date >= ?'; args.push(from); }
     if (to) { sql += ' AND date <= ?'; args.push(to); }
     if (tag) {
-      sql += ' AND id IN (SELECT lt.entry_id FROM log_tags lt JOIN tags t ON t.id = lt.tag_id WHERE t.name = ?)';
-      args.push(tag);
+      sql += ' AND id IN (SELECT lt.entry_id FROM log_tags lt JOIN tags t ON t.id = lt.tag_id WHERE t.name = ? AND t.user_id = ?)';
+      args.push(tag, userId);
     }
     sql += ' ORDER BY date DESC, created_at DESC';
     if (limit) { sql += ' LIMIT ?'; args.push(parseInt(limit, 10)); }
@@ -51,22 +53,24 @@ export async function GET(req: Request) {
     const entries = await rows<LogEntry>(sql, args);
     return NextResponse.json({ data: await attachRelations(entries) });
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const msg = String(e);
+    return NextResponse.json({ error: msg }, { status: msg.includes('Unauthorized') ? 401 : 500 });
   }
 }
 
 export async function POST(req: Request) {
   try {
+    const userId = await requireUserId();
     const body = await req.json() as Partial<LogEntry> & { tags?: string[]; proof_ids?: number[]; chapter_ids?: number[] };
     const now = new Date().toISOString();
     const date = body.date ?? now.split('T')[0];
 
-    const id = await insert('INSERT INTO log_entries (date, body, created_at) VALUES (?, ?, ?)', [date, body.body ?? '', now]);
+    const id = await insert('INSERT INTO log_entries (user_id, date, body, created_at) VALUES (?, ?, ?, ?)', [userId, date, body.body ?? '', now]);
 
     if (body.tags?.length) {
       for (const name of body.tags) {
-        await run('INSERT INTO tags (name) VALUES (?) ON CONFLICT (name) DO NOTHING', [name]);
-        const tag = await row<{ id: number }>('SELECT id FROM tags WHERE name = ?', [name]);
+        await run('INSERT INTO tags (user_id, name) VALUES (?, ?) ON CONFLICT (user_id, name) DO NOTHING', [userId, name]);
+        const tag = await row<{ id: number }>('SELECT id FROM tags WHERE user_id = ? AND name = ?', [userId, name]);
         if (tag) await run('INSERT INTO log_tags (entry_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING', [id, tag.id]);
       }
     }
@@ -85,6 +89,7 @@ export async function POST(req: Request) {
     const entries = await attachRelations([entry!]);
     return NextResponse.json({ data: entries[0] }, { status: 201 });
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const msg = String(e);
+    return NextResponse.json({ error: msg }, { status: msg.includes('Unauthorized') ? 401 : 500 });
   }
 }

@@ -1,10 +1,12 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { row, insert } from '@/lib/db';
+import { requireUserId } from '@/lib/auth';
 import type { Section } from '@/lib/types';
 
 export async function POST(req: Request) {
   try {
+    await requireUserId();
     const body = await req.json() as Partial<Section> & { chapter_id: number };
     const maxRow = await row<{ m: number | null }>(
       'SELECT MAX(order_index) as m FROM sections WHERE chapter_id = ?', [body.chapter_id]
@@ -17,6 +19,7 @@ export async function POST(req: Request) {
     const section = await row<Section>('SELECT * FROM sections WHERE id = ?', [id]);
     return NextResponse.json({ data: section }, { status: 201 });
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const msg = String(e);
+    return NextResponse.json({ error: msg }, { status: msg.includes('Unauthorized') ? 401 : 500 });
   }
 }

@@ -1,3 +1,10 @@
+export interface User {
+  id: number;
+  email: string;
+  name: string;
+  created_at: string;
+}
+
 export type ChapterStatus = 'Not Started' | 'Drafting' | 'In Review' | 'Complete';
 export type ProofStatus = 'Conjecture' | 'In Progress' | 'Draft Complete' | 'Verified';
 export type ReadStatus = 'Unread' | 'Skimmed' | 'Read' | 'Studied';

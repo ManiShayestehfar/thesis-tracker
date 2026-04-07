@@ -1,20 +1,22 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { rows, row, run } from '@/lib/db';
+import { requireUserId } from '@/lib/auth';
 import type { ThesisMeta, Chapter, Proof, LogEntry, Milestone, DashboardData, ChapterStatus, ProofStatus, Tag } from '@/lib/types';
 
 export async function GET() {
   try {
+    const userId = await requireUserId();
     const today = new Date().toISOString().split('T')[0];
     const in30 = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
     // Auto-update overdue milestones
-    await run(`UPDATE milestones SET status = 'Overdue' WHERE due_date < ? AND status = 'Pending'`, [today]);
+    await run(`UPDATE milestones SET status = 'Overdue' WHERE due_date < ? AND status = 'Pending' AND user_id = ?`, [today, userId]);
 
     const [thesis, chapters, proofCounts] = await Promise.all([
-      row<ThesisMeta>('SELECT * FROM thesis WHERE id = 1'),
-      rows<Chapter>('SELECT * FROM chapters'),
-      rows<{ status: ProofStatus; count: number }>('SELECT status, COUNT(*) as count FROM proofs GROUP BY status'),
+      row<ThesisMeta>('SELECT * FROM thesis WHERE user_id = ?', [userId]),
+      rows<Chapter>('SELECT * FROM chapters WHERE user_id = ?', [userId]),
+      rows<{ status: ProofStatus; count: number }>('SELECT status, COUNT(*) as count FROM proofs WHERE user_id = ? GROUP BY status', [userId]),
     ]);
 
     // Chapter stats grouped by status
@@ -44,11 +46,12 @@ export async function GET() {
     // Upcoming milestones (next 30 days + overdue)
     const upcomingMilestones = await rows<Milestone>(`
       SELECT * FROM milestones
-      WHERE (due_date BETWEEN ? AND ? OR status = 'Overdue')
+      WHERE user_id = ?
+      AND (due_date BETWEEN ? AND ? OR status = 'Overdue')
       AND status != 'Complete'
       ORDER BY due_date ASC
       LIMIT 10
-    `, [today, in30]);
+    `, [userId, today, in30]);
 
     if (upcomingMilestones.length > 0) {
       const msIds = upcomingMilestones.map(m => m.id);
@@ -63,7 +66,7 @@ export async function GET() {
     }
 
     // Recent log entries
-    const recentLog = await rows<LogEntry>('SELECT * FROM log_entries ORDER BY date DESC, created_at DESC LIMIT 5');
+    const recentLog = await rows<LogEntry>('SELECT * FROM log_entries WHERE user_id = ? ORDER BY date DESC, created_at DESC LIMIT 5', [userId]);
 
     if (recentLog.length > 0) {
       const logIds = recentLog.map(e => e.id);
@@ -77,8 +80,12 @@ export async function GET() {
       });
     }
 
+    if (!thesis) {
+      return NextResponse.json({ error: 'Thesis not found' }, { status: 404 });
+    }
+
     const data: DashboardData = {
-      thesis: thesis!,
+      thesis,
       chapterStats,
       proofStats,
       upcomingMilestones,
@@ -88,6 +95,7 @@ export async function GET() {
 
     return NextResponse.json({ data });
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const msg = String(e);
+    return NextResponse.json({ error: msg }, { status: msg.includes('Unauthorized') ? 401 : 500 });
   }
 }

@@ -19,17 +19,29 @@ function ensureSchema(): Promise<void> {
 
 async function createSchema(): Promise<void> {
   const stmts = [
+    // Users table
+    `CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL DEFAULT '',
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`,
+    // Core data tables — with user_id
     `CREATE TABLE IF NOT EXISTS thesis (
-      id INTEGER PRIMARY KEY,
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       title TEXT NOT NULL DEFAULT '',
       supervisor TEXT NOT NULL DEFAULT '',
       university TEXT NOT NULL DEFAULT '',
       degree TEXT NOT NULL DEFAULT '',
       expected_submission TEXT NOT NULL DEFAULT '',
-      abstract TEXT NOT NULL DEFAULT ''
+      abstract TEXT NOT NULL DEFAULT '',
+      UNIQUE(user_id)
     )`,
     `CREATE TABLE IF NOT EXISTS chapters (
       id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       title TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'Not Started',
       order_index INTEGER NOT NULL DEFAULT 0,
@@ -50,10 +62,13 @@ async function createSchema(): Promise<void> {
     )`,
     `CREATE TABLE IF NOT EXISTS tags (
       id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      UNIQUE(user_id, name)
     )`,
     `CREATE TABLE IF NOT EXISTS proofs (
       id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       label TEXT NOT NULL,
       statement TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'Conjecture',
@@ -75,6 +90,7 @@ async function createSchema(): Promise<void> {
     )`,
     `CREATE TABLE IF NOT EXISTS log_entries (
       id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       date TEXT NOT NULL,
       body TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL
@@ -102,7 +118,8 @@ async function createSchema(): Promise<void> {
     )`,
     `CREATE TABLE IF NOT EXISTS refs (
       id SERIAL PRIMARY KEY,
-      citation_key TEXT NOT NULL UNIQUE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      citation_key TEXT NOT NULL,
       title TEXT NOT NULL DEFAULT '',
       authors TEXT NOT NULL DEFAULT '',
       year INTEGER,
@@ -110,7 +127,8 @@ async function createSchema(): Promise<void> {
       doi TEXT NOT NULL DEFAULT '',
       url TEXT NOT NULL DEFAULT '',
       notes TEXT NOT NULL DEFAULT '',
-      read_status TEXT NOT NULL DEFAULT 'Unread'
+      read_status TEXT NOT NULL DEFAULT 'Unread',
+      UNIQUE(user_id, citation_key)
     )`,
     `CREATE TABLE IF NOT EXISTS ref_chapters (
       ref_id INTEGER NOT NULL,
@@ -128,6 +146,7 @@ async function createSchema(): Promise<void> {
     )`,
     `CREATE TABLE IF NOT EXISTS milestones (
       id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       title TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       due_date TEXT NOT NULL,
@@ -142,19 +161,23 @@ async function createSchema(): Promise<void> {
     )`,
     `CREATE TABLE IF NOT EXISTS notation (
       id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       symbol TEXT NOT NULL,
       latex TEXT NOT NULL,
       definition TEXT NOT NULL DEFAULT '',
       first_used_chapter_id INTEGER,
       FOREIGN KEY (first_used_chapter_id) REFERENCES chapters(id) ON DELETE SET NULL
     )`,
-    `INSERT INTO thesis (id, title, supervisor, university, degree, expected_submission, abstract)
-     VALUES (1, '', '', '', '', '', '')
-     ON CONFLICT (id) DO NOTHING`,
   ];
   for (const stmt of stmts) {
     await sql(stmt);
   }
+}
+
+/** Called after a new user registers — creates their blank thesis row */
+export async function createUserThesis(userId: number): Promise<void> {
+  await ensureSchema();
+  await sql(p('INSERT INTO thesis (user_id, title, supervisor, university, degree, expected_submission, abstract) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (user_id) DO NOTHING'), [userId, '', '', '', '', '', '']);
 }
 
 export async function rows<T>(query: string, args: SqlParam[] = []): Promise<T[]> {

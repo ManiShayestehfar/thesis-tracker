@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useTheme } from './ThemeProvider';
+import { useAuth } from './AppShell';
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: '⬡' },
@@ -21,6 +22,7 @@ interface Props {
 export default function Sidebar({ onClose }: Props) {
   const pathname = usePathname();
   const { theme, toggle } = useTheme();
+  const { user, signOut } = useAuth();
   const [title, setTitle] = useState('');
 
   useEffect(() => {
@@ -60,13 +62,29 @@ export default function Sidebar({ onClose }: Props) {
         })}
       </nav>
 
-      <div className="p-3 border-t border-neutral-200 dark:border-neutral-800">
+      <div className="p-3 border-t border-neutral-200 dark:border-neutral-800 space-y-1">
+        {/* User info */}
+        {user && (
+          <div className="px-3 py-2">
+            <p className="text-xs font-medium text-neutral-700 dark:text-neutral-300 truncate">{user.name}</p>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate">{user.email}</p>
+          </div>
+        )}
+
         <button
           onClick={toggle}
           className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
         >
           <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
           <span>{theme === 'dark' ? '☀' : '☽'}</span>
+        </button>
+
+        <button
+          onClick={signOut}
+          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+        >
+          <span>Sign out</span>
+          <span>→</span>
         </button>
       </div>
     </aside>

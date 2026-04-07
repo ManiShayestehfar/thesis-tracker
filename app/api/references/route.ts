@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { rows, row, run, insert } from '@/lib/db';
+import { requireUserId } from '@/lib/auth';
 import type { Reference } from '@/lib/types';
 
 async function attachRelations(refs: Reference[]): Promise<Reference[]> {
@@ -26,12 +27,13 @@ async function attachRelations(refs: Reference[]): Promise<Reference[]> {
 
 export async function GET(req: Request) {
   try {
+    const userId = await requireUserId();
     const { searchParams } = new URL(req.url);
     const status = searchParams.get('status');
     const q = searchParams.get('q');
 
-    let sql = 'SELECT * FROM refs WHERE 1=1';
-    const args: (string | number)[] = [];
+    let sql = 'SELECT * FROM refs WHERE user_id = ?';
+    const args: (string | number)[] = [userId];
 
     if (status) { sql += ' AND read_status = ?'; args.push(status); }
     if (q) {
@@ -44,16 +46,18 @@ export async function GET(req: Request) {
     const refs = await rows<Reference>(sql, args);
     return NextResponse.json({ data: await attachRelations(refs) });
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const msg = String(e);
+    return NextResponse.json({ error: msg }, { status: msg.includes('Unauthorized') ? 401 : 500 });
   }
 }
 
 export async function POST(req: Request) {
   try {
+    const userId = await requireUserId();
     const body = await req.json() as Partial<Reference> & { chapter_ids?: number[]; proof_ids?: number[] };
     const id = await insert(
-      'INSERT INTO refs (citation_key, title, authors, year, journal, doi, url, notes, read_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [body.citation_key ?? '', body.title ?? '', body.authors ?? '', body.year ?? null, body.journal ?? '', body.doi ?? '', body.url ?? '', body.notes ?? '', body.read_status ?? 'Unread']
+      'INSERT INTO refs (user_id, citation_key, title, authors, year, journal, doi, url, notes, read_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [userId, body.citation_key ?? '', body.title ?? '', body.authors ?? '', body.year ?? null, body.journal ?? '', body.doi ?? '', body.url ?? '', body.notes ?? '', body.read_status ?? 'Unread']
     );
 
     if (body.chapter_ids?.length) {
@@ -71,6 +75,7 @@ export async function POST(req: Request) {
     const refs = await attachRelations([ref!]);
     return NextResponse.json({ data: refs[0] }, { status: 201 });
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const msg = String(e);
+    return NextResponse.json({ error: msg }, { status: msg.includes('Unauthorized') ? 401 : 500 });
   }
 }

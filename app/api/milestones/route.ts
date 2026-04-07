@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { rows, row, run, insert } from '@/lib/db';
+import { requireUserId } from '@/lib/auth';
 import type { Milestone } from '@/lib/types';
 
 async function attachChapters(milestones: Milestone[]): Promise<Milestone[]> {
@@ -19,21 +20,24 @@ async function attachChapters(milestones: Milestone[]): Promise<Milestone[]> {
 
 export async function GET() {
   try {
+    const userId = await requireUserId();
     const today = new Date().toISOString().split('T')[0];
-    await run(`UPDATE milestones SET status = 'Overdue' WHERE due_date < ? AND status = 'Pending'`, [today]);
-    const milestones = await rows<Milestone>('SELECT * FROM milestones ORDER BY due_date ASC');
+    await run(`UPDATE milestones SET status = 'Overdue' WHERE due_date < ? AND status = 'Pending' AND user_id = ?`, [today, userId]);
+    const milestones = await rows<Milestone>('SELECT * FROM milestones WHERE user_id = ? ORDER BY due_date ASC', [userId]);
     return NextResponse.json({ data: await attachChapters(milestones) });
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const msg = String(e);
+    return NextResponse.json({ error: msg }, { status: msg.includes('Unauthorized') ? 401 : 500 });
   }
 }
 
 export async function POST(req: Request) {
   try {
+    const userId = await requireUserId();
     const body = await req.json() as Partial<Milestone> & { chapter_ids?: number[] };
     const id = await insert(
-      'INSERT INTO milestones (title, description, due_date, status) VALUES (?, ?, ?, ?)',
-      [body.title ?? 'New Milestone', body.description ?? '', body.due_date ?? new Date().toISOString().split('T')[0], body.status ?? 'Pending']
+      'INSERT INTO milestones (user_id, title, description, due_date, status) VALUES (?, ?, ?, ?, ?)',
+      [userId, body.title ?? 'New Milestone', body.description ?? '', body.due_date ?? new Date().toISOString().split('T')[0], body.status ?? 'Pending']
     );
 
     if (body.chapter_ids?.length) {
@@ -46,6 +50,7 @@ export async function POST(req: Request) {
     const mss = await attachChapters([ms!]);
     return NextResponse.json({ data: mss[0] }, { status: 201 });
   } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const msg = String(e);
+    return NextResponse.json({ error: msg }, { status: msg.includes('Unauthorized') ? 401 : 500 });
   }
 }
