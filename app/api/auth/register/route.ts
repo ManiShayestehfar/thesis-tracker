@@ -35,6 +35,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ data: { id, email: email.toLowerCase().trim(), name: name.trim() } }, { status: 201 });
   } catch (e) {
+    console.error('[register]', e);
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }

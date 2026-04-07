@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
-import { format, parseISO, differenceInDays } from 'date-fns';
+import { format, parseISO, differenceInDays, startOfMonth, endOfMonth, addMonths, eachMonthOfInterval } from 'date-fns';
 import type { Milestone, MilestoneStatus, Chapter } from '@/lib/types';
 import StatusBadge from '@/components/StatusBadge';
 
@@ -105,11 +105,152 @@ function MsModal({
   );
 }
 
+function GanttChart({ milestones }: { milestones: Milestone[] }) {
+  const [tooltip, setTooltip] = useState<{ ms: Milestone; x: number; y: number } | null>(null);
+
+  if (milestones.length === 0) {
+    return <div className="text-sm text-neutral-400 text-center py-8">No milestones to display.</div>;
+  }
+
+  const today = new Date();
+  const dates = milestones.map(m => parseISO(m.due_date));
+  const minDate = new Date(Math.min(today.getTime(), ...dates.map(d => d.getTime())));
+  const maxDate = new Date(Math.max(today.getTime(), ...dates.map(d => d.getTime())));
+  // Expand to full months
+  const start = startOfMonth(minDate);
+  const end = endOfMonth(addMonths(maxDate, 0));
+  const totalMs = end.getTime() - start.getTime();
+
+  const months = eachMonthOfInterval({ start, end });
+
+  const pct = (d: Date) => Math.max(0, Math.min(100, ((d.getTime() - start.getTime()) / totalMs) * 100));
+
+  const statusColor = (ms: Milestone) => {
+    if (ms.status === 'Complete') return 'bg-emerald-500 dark:bg-emerald-400 border-emerald-500 dark:border-emerald-400';
+    if (ms.status === 'Overdue') return 'bg-red-500 dark:bg-red-400 border-red-500 dark:border-red-400';
+    const days = differenceInDays(parseISO(ms.due_date), today);
+    if (days <= 7) return 'bg-amber-500 dark:bg-amber-400 border-amber-500 dark:border-amber-400';
+    return 'bg-blue-500 dark:bg-blue-400 border-blue-500 dark:border-blue-400';
+  };
+
+  const todayPct = pct(today);
+
+  return (
+    <div className="relative select-none">
+      {/* Month labels */}
+      <div className="relative h-6 mb-1">
+        {months.map((m, i) => {
+          const left = pct(m);
+          return (
+            <span
+              key={i}
+              className="absolute text-[10px] text-neutral-400 dark:text-neutral-500 whitespace-nowrap"
+              style={{ left: `${left}%`, transform: 'translateX(-50%)' }}
+            >
+              {format(m, 'MMM yyyy')}
+            </span>
+          );
+        })}
+      </div>
+
+      {/* Timeline track */}
+      <div className="relative h-2 bg-neutral-100 dark:bg-neutral-800 rounded-full mb-3">
+        {/* Month gridlines */}
+        {months.slice(1).map((m, i) => (
+          <div
+            key={i}
+            className="absolute top-0 bottom-0 w-px bg-neutral-200 dark:bg-neutral-700"
+            style={{ left: `${pct(m)}%` }}
+          />
+        ))}
+        {/* Today line */}
+        <div
+          className="absolute top-[-4px] bottom-[-4px] w-0.5 bg-neutral-500 dark:bg-neutral-400 rounded z-10"
+          style={{ left: `${todayPct}%` }}
+        />
+      </div>
+
+      {/* Milestone rows */}
+      <div className="space-y-2">
+        {milestones.map(ms => {
+          const left = pct(parseISO(ms.due_date));
+          return (
+            <div key={ms.id} className="relative h-7 flex items-center">
+              {/* Connector line from left edge to marker */}
+              <div
+                className="absolute top-1/2 h-px bg-neutral-200 dark:bg-neutral-700"
+                style={{ left: 0, width: `${left}%` }}
+              />
+              {/* Marker */}
+              <button
+                className={`absolute w-3.5 h-3.5 rounded-full border-2 z-10 transition-transform hover:scale-125 ${statusColor(ms)}`}
+                style={{ left: `${left}%`, transform: 'translateX(-50%)' }}
+                onMouseEnter={e => {
+                  const rect = (e.target as HTMLElement).getBoundingClientRect();
+                  setTooltip({ ms, x: rect.left + rect.width / 2, y: rect.top });
+                }}
+                onMouseLeave={() => setTooltip(null)}
+                aria-label={ms.title}
+              />
+              {/* Label */}
+              <span
+                className="absolute text-[11px] text-neutral-600 dark:text-neutral-400 whitespace-nowrap overflow-hidden max-w-[180px] text-ellipsis pl-1"
+                style={{ left: `${Math.min(left + 1.5, 75)}%` }}
+              >
+                {ms.title}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Today label */}
+      <div className="relative h-5 mt-1">
+        <span
+          className="absolute text-[10px] text-neutral-500 dark:text-neutral-400 whitespace-nowrap"
+          style={{ left: `${todayPct}%`, transform: 'translateX(-50%)' }}
+        >
+          Today
+        </span>
+      </div>
+
+      {/* Tooltip (fixed position) */}
+      {tooltip && (
+        <div
+          className="fixed z-50 px-2.5 py-1.5 rounded-lg bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 text-xs shadow-xl pointer-events-none max-w-xs"
+          style={{ left: tooltip.x, top: tooltip.y - 8, transform: 'translate(-50%, -100%)' }}
+        >
+          <p className="font-semibold">{tooltip.ms.title}</p>
+          <p className="text-neutral-400 dark:text-neutral-500">{format(parseISO(tooltip.ms.due_date), 'dd MMM yyyy')} · {tooltip.ms.status}</p>
+          {tooltip.ms.description && <p className="mt-0.5 text-neutral-300 dark:text-neutral-600">{tooltip.ms.description}</p>}
+        </div>
+      )}
+
+      {/* Legend */}
+      <div className="flex items-center gap-4 mt-4 pt-3 border-t border-neutral-100 dark:border-neutral-800">
+        {[
+          { color: 'bg-emerald-500', label: 'Complete' },
+          { color: 'bg-red-500', label: 'Overdue' },
+          { color: 'bg-amber-500', label: 'Due soon' },
+          { color: 'bg-blue-500', label: 'Pending' },
+          { color: 'bg-neutral-500', label: 'Today' },
+        ].map(({ color, label }) => (
+          <div key={label} className="flex items-center gap-1.5">
+            <div className={`w-2.5 h-2.5 rounded-full ${color}`} />
+            <span className="text-[10px] text-neutral-500 dark:text-neutral-400">{label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function MilestonesPage() {
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [chapters, setChapters] = useState<Pick<Chapter, 'id' | 'title'>[]>([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState<Milestone | null | 'new'>(null);
+  const [view, setView] = useState<'list' | 'gantt'>('list');
 
   const load = useCallback(() => {
     setLoading(true);
@@ -196,11 +337,27 @@ export default function MilestonesPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-semibold text-neutral-800 dark:text-neutral-100">Milestones</h2>
-        <button className="btn-primary" onClick={() => setModal('new')}>+ New Milestone</button>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-lg border border-neutral-200 dark:border-neutral-700 overflow-hidden text-xs">
+            <button
+              className={`px-3 py-1.5 transition-colors ${view === 'list' ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900' : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800'}`}
+              onClick={() => setView('list')}
+            >List</button>
+            <button
+              className={`px-3 py-1.5 transition-colors ${view === 'gantt' ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900' : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800'}`}
+              onClick={() => setView('gantt')}
+            >Timeline</button>
+          </div>
+          <button className="btn-primary" onClick={() => setModal('new')}>+ New</button>
+        </div>
       </div>
 
       {milestones.length === 0 ? (
         <div className="text-sm text-neutral-400 text-center py-12">No milestones yet.</div>
+      ) : view === 'gantt' ? (
+        <div className="card overflow-x-auto">
+          <GanttChart milestones={[...milestones].sort((a, b) => a.due_date.localeCompare(b.due_date))} />
+        </div>
       ) : (
         <div className="space-y-6">
           {overdue.length > 0 && (
